@@ -18,7 +18,7 @@ import yt_dlp
 # ==========================
 
 # TODO: change this to your playlist URL
-PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLTB38N73SAXtABJiU3PUQXFkQSnTRt5oP"
+PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLXrRC--1DgPab9DaC_WSUsrMEeMa3uhD7"
 
 # Output folder for saved transcripts
 OUTPUT_DIR = "transcripts"
@@ -26,6 +26,10 @@ OUTPUT_DIR = "transcripts"
 # Delay between processing videos (in seconds)
 MIN_DELAY_SECONDS = 5
 MAX_DELAY_SECONDS = 20
+
+# Batch settings: after this many videos, take a longer rest
+BATCH_SIZE = 100
+BATCH_REST_SECONDS = 5 * 60  # 5 minutes
 
 # Preferred transcript languages (in order)
 # Add more if needed, for example ["tr", "en"] for Turkish + English.
@@ -76,7 +80,8 @@ def get_videos_from_playlist(playlist_url: str) -> List[Dict[str, str]]:
 # ==========================
 
 def fetch_transcript_for_video(
-    video_id: str, languages: Optional[List[str]] = None
+    video_id: str,
+    languages: Optional[List[str]] = None,
 ) -> Optional[List[Dict]]:
     """
     Fetch transcript segments for a video using youtube-transcript-api.
@@ -116,13 +121,12 @@ def sanitize_filename(name: str) -> str:
     return name.strip()[:150] or "untitled"
 
 
-def save_transcript(
+def build_transcript_filepath(
     video: Dict[str, str],
-    segments: List[Dict],
     output_dir: str = OUTPUT_DIR,
-) -> None:
+) -> str:
     """
-    Save transcript as JSON, including video id, title, and segments.
+    Build the output filepath for a video's transcript JSON.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -131,11 +135,22 @@ def save_transcript(
     safe_title = sanitize_filename(title)
 
     filename = f"{safe_title}__{video_id}.json"
-    filepath = os.path.join(output_dir, filename)
+    return os.path.join(output_dir, filename)
+
+
+def save_transcript(
+    video: Dict[str, str],
+    segments: List[Dict],
+    output_dir: str = OUTPUT_DIR,
+) -> None:
+    """
+    Save transcript as JSON, including video id, title, and segments.
+    """
+    filepath = build_transcript_filepath(video, output_dir=output_dir)
 
     data = {
-        "video_id": video_id,
-        "title": title,
+        "video_id": video.get("id", ""),
+        "title": video.get("title", ""),
         "segments": segments,
     }
 
@@ -172,6 +187,16 @@ def main() -> None:
         print(f"  ID: {video_id}")
         print(f"  Title: {title}")
 
+        # Simple resume system: skip videos that already have a saved transcript file
+        existing_path = build_transcript_filepath(video, output_dir=OUTPUT_DIR)
+        if os.path.exists(existing_path):
+            print(f"  Transcript already exists at: {existing_path}")
+            # Still sleep a bit before moving to the next video
+            delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+            print(f"  Sleeping for {delay:.1f} seconds before next video...")
+            time.sleep(delay)
+            continue
+
         segments = fetch_transcript_for_video(video_id)
 
         if not segments:
@@ -183,6 +208,14 @@ def main() -> None:
         delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
         print(f"  Sleeping for {delay:.1f} seconds...")
         time.sleep(delay)
+
+        # Long cool-down after each batch of BATCH_SIZE videos (except after the last one)
+        if index % BATCH_SIZE == 0 and index < total:
+            print(
+                f"\nProcessed {index} videos, taking a long rest of "
+                f"{BATCH_REST_SECONDS} seconds..."
+            )
+            time.sleep(BATCH_REST_SECONDS)
 
     print("\nDone processing all videos.")
 
